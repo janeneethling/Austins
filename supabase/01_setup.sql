@@ -1,7 +1,6 @@
 -- =====================================================================
 --  Ons Twee – database setup
---  1) Replace the two example emails at the bottom of this file with yours.
---  2) Paste the whole file into Supabase → SQL Editor → New query → Run.
+--  Already applied to the 'ons-twee' Supabase project. Kept here for reference / re-creating it.
 --  Safe to run more than once.
 -- =====================================================================
 
@@ -184,8 +183,6 @@ select 'Groceries', '🛒', 1, null where not exists (select 1 from public.lists
 insert into public.lists(name, emoji, sort, created_by)
 select 'Pharmacy', '💊', 2, null where not exists (select 1 from public.lists where name = 'Pharmacy');
 
--- ---------- YOUR TWO EMAILS (change these!) ----------------------------
-insert into public.allowed_users(email) values
-  ('you@example.com'),
-  ('partner@example.com')
-on conflict do nothing;
+-- ---------- Who may sign up ---------------------------------------------
+-- The first person to create an account becomes the owner; they invite their partner
+-- in the app (Settings → Partner). See 02_accounts_and_notifications.sql.

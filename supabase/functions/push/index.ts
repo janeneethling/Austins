@@ -2,14 +2,27 @@
 //   { "type": "reminders" }                     every 5 min: events starting within the hour
 //   { "type": "digest" }                        07:00 daily: chores, birthdays, trips, today's events
 //   { "type": "budget", "transaction_id": ... } after an expense: alert if a category just went over budget
-// Secrets: VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY, VAPID_SUBJECT, CRON_SECRET
-// (SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided automatically)
+// Keys + shared secret are read from the database (private.config via public.push_config(), service role only).
+// SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided automatically by Supabase.
 
 import webpush from "npm:web-push@3.6.7";
 import { createClient } from "npm:@supabase/supabase-js@2.117.3";
 
-const db = createClient(Deno.env.get("SUPABASE_URL")!, Deno.env.get("SUPABASE_SERVICE_ROLE_KEY")!, { auth: { persistSession: false } });
-webpush.setVapidDetails(Deno.env.get("VAPID_SUBJECT") ?? "mailto:us@example.com", Deno.env.get("VAPID_PUBLIC_KEY")!, Deno.env.get("VAPID_PRIVATE_KEY")!);
+function serviceKey() {
+  const legacy = Deno.env.get("SUPABASE_SERVICE_ROLE_KEY");
+  if (legacy) return legacy;
+  try { const keys = JSON.parse(Deno.env.get("SUPABASE_SECRET_KEYS") ?? "{}"); return keys.default ?? Object.values(keys)[0]; } catch { return ""; }
+}
+const db = createClient(Deno.env.get("SUPABASE_URL")!, serviceKey() as string, { auth: { persistSession: false } });
+let CFG: Record<string, string> | null = null;
+async function config() {
+  if (CFG) return CFG;
+  const { data, error } = await db.rpc("push_config");
+  if (error) throw error;
+  CFG = Object.fromEntries((data ?? []).map((r: { key: string; value: string }) => [r.key, r.value]));
+  webpush.setVapidDetails(CFG.vapid_subject || "mailto:us@example.com", CFG.vapid_public, CFG.vapid_private);
+  return CFG;
+}
 
 const CATS: Record<string, string> = {
   groceries: "🛒 Groceries", eating_out: "🍔 Eating out", home: "🏠 Home & rent", utilities: "💡 Utilities", transport: "⛽ Transport",
@@ -128,8 +141,9 @@ async function budget(txId: string) {
 }
 
 Deno.serve(async (req) => {
-  if (req.headers.get("x-cron-secret") !== Deno.env.get("CRON_SECRET")) return new Response("unauthorised", { status: 401 });
   try {
+    const cfg = await config();
+    if (!cfg.cron_secret || req.headers.get("x-cron-secret") !== cfg.cron_secret) return new Response("unauthorised", { status: 401 });
     const body = await req.json().catch(() => ({}));
     const sent = body.type === "digest" ? await digest() : body.type === "budget" ? await budget(body.transaction_id) : await reminders();
     return Response.json({ ok: true, sent });

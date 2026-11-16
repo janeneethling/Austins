@@ -548,6 +548,7 @@ VIEWS.settings = () => {
         <div class="two"><label class="fld"><span>Goal weight (kg)</span><input name="goal_weight" inputmode="decimal" value="${p.goal_weight ?? ''}"></label>
         <label class="fld"><span>Height (cm)</span><input name="height_cm" inputmode="decimal" value="${p.height_cm ?? ''}"></label></div>
         <button class="btn pri wide">Save</button></form></section>
+    <section class="card"><h3>💑 Partner</h3>${partnerSection()}</section>
     <section class="card"><h3>🔔 Notifications</h3>${notifSection()}</section>
     <section class="card"><h3>🔒 Account</h3><p class="muted">${esc(S.email)}</p>
       <button class="btn ghost wide" data-act="change-pw">Change password</button>
@@ -556,6 +557,13 @@ VIEWS.settings = () => {
     <p class="muted center small">${esc(CONFIG.APP_NAME)} · made with ♥</p>`;
 };
 
+function partnerSection() {
+  const list = S.allowed || [];
+  const others = list.filter((e) => e.toLowerCase() !== S.email.toLowerCase());
+  return `${others.length ? `<ul class="rows">${others.map((e) => `<li class="task"><span class="tb"><b>${esc(e)}</b><small>${S.db.profiles.length > 1 ? 'Joined ✓' : 'Invited – not signed up yet'}</small></span><button class="x" data-act="uninvite" data-email="${esc(e)}">Remove</button></li>`).join('')}</ul>` : ''}
+    ${list.length < 2 ? `<p class="muted">Add your partner's email. They then open the app, tap “Create your account” and use that email.</p>
+      <form class="additem" data-form="invite"><input name="email" type="email" placeholder="partner@email.com" required data-keep><button class="btn pri">Invite</button></form>` : ''}`;
+}
 function notifSection() {
   const st = pushStatus();
   if (st === 'install') return '<p class="note">📲 On iPhone, notifications only work once the app is on your Home Screen: open it in Safari → Share → <b>Add to Home Screen</b>, then open it from there. Needs iOS 16.4 or newer.</p>';
@@ -690,6 +698,8 @@ const A = {
   'change-pw': () => guard(async () => { const pw = prompt('New password (at least 8 characters):'); if (!pw) return; if (pw.length < 8) throw new Error('Password too short.'); await api.changePassword(pw); toast('Password changed ✓'); }),
   'sign-out': () => guard(async () => { if (!confirm('Sign out on this device?')) return; await api.signOut(); localStorage.removeItem('onstwee-cache'); location.hash = ''; location.reload(); }),
   'reset-demo': () => resetDemo(),
+  'auth-mode': (el) => signInScreen('', el.dataset.mode),
+  'uninvite': (el) => guard(async () => { if (!confirm(`Remove ${el.dataset.email}? They will lose access.`)) return; await api.uninvite(el.dataset.email); S.allowed = await api.allowed(); render(); }),
   'push-test': () => guard(testNotification),
 };
 document.addEventListener('click', (e) => {
@@ -720,13 +730,17 @@ document.addEventListener('submit', (e) => {
     }
     closeSheet(); await refresh('budgets'); toast('Budgets saved ✓');
   });
+  if (kind === 'invite') return guard(async () => {
+    await api.invite(String(fd.get('email'))); S.allowed = await api.allowed(); toast('Invited 💌'); render();
+  });
   if (kind === 'profile') return guard(async () => {
     await save('profiles', { user_id: S.me, name: String(fd.get('name')).trim(), color: fd.get('color') || COLORS[0], goal_weight: num(fd.get('goal_weight')), height_cm: num(fd.get('height_cm')) });
     toast('Saved ✓');
   });
   if (kind === 'signin') return guard(async () => {
-    const btn = f.querySelector('button'); btn.disabled = true; btn.textContent = 'Signing in…';
-    try { await api.signIn(String(fd.get('email')), String(fd.get('password'))); await start(); } finally { btn.disabled = false; btn.textContent = 'Sign in'; }
+    const up = f.dataset.mode === 'signup'; const btn = f.querySelector('button'); const label = btn.textContent;
+    btn.disabled = true; btn.textContent = up ? 'Creating…' : 'Signing in…';
+    try { await (up ? api.signUp : api.signIn).call(api, String(fd.get('email')), String(fd.get('password'))); await start(); } finally { btn.disabled = false; btn.textContent = label; }
   });
   if (kind === 'welcome') return guard(async () => {
     await api.save('profiles', { user_id: S.me, name: String(fd.get('name')).trim(), color: fd.get('color') || COLORS[0] });
@@ -747,12 +761,14 @@ document.addEventListener('change', (e) => {
 document.addEventListener('focusout', () => setTimeout(() => { if (S.pending && !document.querySelector('.sheet-bg') && !['INPUT', 'TEXTAREA'].includes(document.activeElement?.tagName)) render(); }, 50));
 
 // ================================================================== boot
-function signInScreen(msg = '') {
+function signInScreen(msg = '', mode = 'signin') {
+  const up = mode === 'signup';
   $app.innerHTML = `<main class="auth"><div class="logo">🏡💕</div><h1>${esc(CONFIG.APP_NAME)}</h1><p class="muted">Just the two of us.</p>
     ${msg ? `<p class="note">${esc(msg)}</p>` : ''}
-    <form data-form="signin" class="form"><label class="fld"><span>Email</span><input name="email" type="email" autocomplete="username" required></label>
-    <label class="fld"><span>Password</span><input name="password" type="password" autocomplete="current-password" required></label>
-    <button class="btn pri wide">Sign in</button></form></main>`;
+    <form data-form="signin" data-mode="${mode}" class="form"><label class="fld"><span>Email</span><input name="email" type="email" autocomplete="username" required></label>
+    <label class="fld"><span>Password${up ? ' (at least 8 characters)' : ''}</span><input name="password" type="password" minlength="${up ? 8 : 1}" autocomplete="${up ? 'new-password' : 'current-password'}" required></label>
+    <button class="btn pri wide">${up ? 'Create account' : 'Sign in'}</button></form>
+    <button class="link center" data-act="auth-mode" data-mode="${up ? 'signin' : 'signup'}">${up ? 'I already have an account – sign in' : 'First time here? Create your account'}</button></main>`;
 }
 function welcomeScreen() {
   $app.innerHTML = `<main class="auth"><div class="logo">👋</div><h1>Welcome!</h1><p class="muted">What should we call you?</p>
@@ -768,6 +784,7 @@ async function start() {
   try { S.db = await api.loadAll(); cache(); }
   catch (e) { const c = localStorage.getItem('onstwee-cache'); if (c) { S.db = JSON.parse(c); toast('Offline – showing saved data'); } else throw e; }
   if (!me()) { const keepMe = S.me; S.me = null; welcomeScreen(); S.me = keepMe; return; }
+  S.allowed = await api.allowed().catch(() => []);
   if (pushStatus() === 'ok') S.pushOn = DEMO ? Notification.permission === 'granted' : !!(await currentSub().catch(() => null));
   render();
   if (!S.subscribed) { S.subscribed = true; api.subscribe((t) => api.load(t).then((rows) => { S.db[t] = rows; cache(); safeRender(); }).catch(() => {})); }

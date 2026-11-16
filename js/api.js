@@ -25,6 +25,15 @@ const remote = {
     if (error) throw new Error(error.message === 'Invalid login credentials' ? 'Wrong email or password.' : error.message);
     return data.user;
   },
+  async signUp(email, password) {
+    const c = await supa();
+    const { error } = await c.auth.signUp({ email: email.trim(), password });
+    if (error) throw new Error(/database error|not_invited/i.test(error.message) ? 'This email isn\'t invited yet. Ask your partner to add it in Settings → Partner.' : error.message);
+    return this.signIn(email, password);
+  },
+  async allowed() { return unwrap(await (await supa()).from('allowed_users').select('email')).map((r) => r.email); },
+  async invite(email) { unwrap(await (await supa()).from('allowed_users').insert({ email: email.trim().toLowerCase() })); },
+  async uninvite(email) { unwrap(await (await supa()).from('allowed_users').delete().eq('email', email)); },
   async signOut() { await (await supa()).auth.signOut(); },
   async changePassword(pw) { const c = await supa(); unwrap(await c.auth.updateUser({ password: pw })); },
   async isAllowed() { return unwrap(await (await supa()).rpc('is_partner')); },
@@ -134,6 +143,9 @@ const demo = {
   async user() { const s = load(); return s._me ? { id: s._me, email: 'demo@example.com' } : null; },
   async signIn() { const s = load(); s._me = 'u-a'; persist(s); return { id: 'u-a', email: 'demo@example.com' }; },
   async signOut() { const s = load(); s._me = null; persist(s); },
+  async signUp() { return this.signIn(); },
+  async allowed() { return ['demo@example.com', 'partner@example.com']; },
+  async invite() {}, async uninvite() {},
   async changePassword() {},
   async isAllowed() { return true; },
   async loadAll() { const s = load(); return Object.fromEntries(TABLES.map((t) => [t, s[t] || []])); },
