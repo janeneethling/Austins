@@ -393,7 +393,7 @@ VIEWS.list = (id) => {
   const open = items.filter((i) => !i.done).sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
   const done = items.filter((i) => i.done);
   const row = (i) => `<li class="${i.done ? 'done' : ''}"><button class="check" data-act="toggle-item" data-id="${i.id}" aria-label="tick">${i.done ? '✓' : ''}</button>
-    <span class="itx">${esc(i.text)}${i.qty ? ` <small>${esc(i.qty)}</small>` : ''}</span><button class="x" data-act="del-item" data-id="${i.id}" aria-label="delete">✕</button></li>`;
+    <button class="itx" data-act="edit-item" data-id="${i.id}">${esc(i.text)}${i.qty ? ` <small>${esc(i.qty)}</small>` : ''}</button><button class="x" data-act="del-item" data-id="${i.id}" aria-label="delete">✕</button></li>`;
   return `${header(`${esc(l.emoji || '')} ${esc(l.name)}`, { back: '#/lists' })}
     <form class="additem card" data-form="item" data-list="${id}">
       <input name="text" placeholder="Add an item…" autocomplete="off" data-keep enterkeyhint="done" maxlength="80">
@@ -818,6 +818,9 @@ const A = {
   'add-deposit': (el) => depositForm(el.dataset.id),
   'add-list': () => listForm(), 'edit-list': (el) => listForm(find('lists', el.dataset.id)),
   'toggle-item': (el) => guard(async () => { const i = find('list_items', el.dataset.id); i.done = !i.done; render(); await save('list_items', { id: i.id, done: i.done }); }),
+  'edit-item': (el) => openForm({ title: 'Edit item', table: 'list_items', row: find('list_items', el.dataset.id),
+    fields: [{ k: 'text', label: 'Item', req: true, autofocus: true }, { k: 'qty', label: 'Qty / note', ph: 'e.g. 2L' },
+      { k: 'list_id', label: 'List', type: 'select', options: [...S.db.lists].sort((a, b) => (a.sort ?? 100) - (b.sort ?? 100)).map((l) => [l.id, `${l.emoji || ''} ${l.name}`]) }] }),
   'del-item': (el) => guard(() => remove('list_items', el.dataset.id)),
   'clear-done': (el) => guard(async () => { for (const i of S.db.list_items.filter((x) => x.list_id === el.dataset.id && x.done)) await api.remove('list_items', i.id); await refresh('list_items'); }),
   'recipe-tab': (el) => { S.recipeTab = el.dataset.id; render(); },

@@ -253,3 +253,5 @@ main.auth { min-height: 100dvh; display: flex; flex-direction: column; justify-c
 .agmonth { margin: 22px 0 2px; font-family: var(--font-head); }
 .agday .sec { margin-top: 14px; }
 .agtoday { color: var(--accent); }
+
+button.itx { text-align: left; flex: 1; min-width: 0; padding: 4px 0; font: inherit; color: inherit; }
