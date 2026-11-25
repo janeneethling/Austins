@@ -16,7 +16,7 @@ const MEASURES = [['weight', 'Weight', 'kg'], ['body_fat', 'Body fat', '%'], ['w
 const TZ = CONFIG.TIMEZONE || 'Africa/Johannesburg';
 
 // ================================================================== state
-const S = { db: Object.fromEntries(TABLES.map((t) => [t, []])), me: null, email: '', month: null, day: null, calMonth: null, ideaTab: 'date', pending: false };
+const S = { calView: (() => { try { return localStorage.getItem('onstwee-calview') || 'month'; } catch { return 'month'; } })(), db: Object.fromEntries(TABLES.map((t) => [t, []])), me: null, email: '', month: null, day: null, calMonth: null, ideaTab: 'date', pending: false };
 const $app = document.getElementById('app');
 
 // ================================================================== utils
@@ -231,13 +231,42 @@ VIEWS.calendar = (pick) => {
   let ws = addDays(first, -dow(first)); let weeks = '';
   while (ws <= last) { weeks += weekRow(ws, td); ws = addDays(ws, 7); }
   const list = itemsOn(S.day);
-  return `${header(esc(fmt(first, { month: 'long', year: 'numeric' })), { add: 'add-event' })}
+  const toggle = `<div class="segc wide calview">${[['month', '🗓️ Month'], ['agenda', '📋 Agenda']].map(([k, n]) => `<button class="${(S.calView || 'month') === k ? 'on' : ''}" data-act="cal-view" data-id="${k}">${n}</button>`).join('')}</div>`;
+  if (S.calView === 'agenda') return `${header('Agenda', { add: 'add-event' })}${toggle}${agendaList(td)}`;
+  return `${header(esc(fmt(first, { month: 'long', year: 'numeric' })), { add: 'add-event' })}${toggle}
     <div class="monthnav"><button class="pill" data-act="cal-prev">‹ Prev</button><button class="pill" data-act="cal-today">Today</button><button class="pill" data-act="cal-next">Next ›</button></div>
     <section class="card cal"><div class="dows">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => `<span>${d}</span>`).join('')}</div>${weeks}</section>
     <div class="ch" id="dayhead"><h2>${esc(fmt(S.day, { weekday: 'long', day: 'numeric', month: 'long' }))}</h2><button class="link" data-act="add-event" data-date="${S.day}">＋ Add</button></div>
     ${list.length ? `<div class="list">${list.map((x) => `<${x.edit ? `button data-act="${x.edit}" data-id="${x.id}"` : `a href="${x.href}"`} class="card ev" style="--c:${x.color}">
         <span class="evb"><b>${x.icon} ${esc(x.title)}</b><small>${esc(x.sub)}</small></span>${x.who ? whoChip(x.who) : ''}</${x.edit ? 'button' : 'a'}>`).join('')}</div>` : empty('🌤️', 'Nothing planned.')}`;
 };
+// Agenda: everything from today onwards, grouped by day. Multi-day items appear once, on their first day.
+function agendaList(td) {
+  const days = S.agendaDays || 60, to = addDays(td, days), rows = [];
+  eventInstances(td, to).forEach(({ e, s, last }) => {
+    const multi = last !== s;
+    rows.push({ date: s < td ? td : s, t: hm(e.start_time) || (multi ? '00:00' : '00:01'), id: e.id, edit: 'edit-event', icon: '📅', title: e.title, color: evColor(e), who: e.who,
+      sub: [multi ? `${fmt(s, { day: 'numeric', month: 'short' })} – ${fmt(last, { day: 'numeric', month: 'short' })}` : '',
+        e.start_time ? hm(e.start_time) + (e.end_time && !multi ? '–' + hm(e.end_time) : '') : multi ? '' : 'All day', e.location,
+        e.repeat && e.repeat !== 'none' ? `🔁 ${REPEAT_LABEL[e.repeat]}` : ''].filter(Boolean).join(' · ') });
+  });
+  S.db.people.forEach((p) => { for (let d = nextOccurrence(p, td); d && d <= to; d = nextOccurrence(p, addDays(d, 1)))
+    rows.push({ date: d, t: '00:00', href: `#/person/${p.id}`, icon: p.kind === 'birthday' ? '🎂' : p.kind === 'anniversary' ? '💍' : '⭐', title: personTitle(p, d), sub: p.kind === 'birthday' ? 'Birthday' : p.kind === 'anniversary' ? 'Anniversary' : 'Important date', color: '#ef5da8' }); });
+  S.db.trips.forEach((t) => { const last = t.end_date || t.start_date; if (t.start_date && last >= td && t.start_date <= to)
+    rows.push({ date: t.start_date < td ? td : t.start_date, t: '00:00', href: `#/trip/${t.id}`, icon: '✈️', title: t.name, color: '#3b9eea',
+      sub: [t.destination, t.end_date ? `${fmt(t.start_date, { day: 'numeric', month: 'short' })} – ${fmt(t.end_date, { day: 'numeric', month: 'short' })}` : ''].filter(Boolean).join(' · ') }); });
+  rows.sort((a, b) => (a.date + a.t).localeCompare(b.date + b.t));
+  const groups = {}; rows.forEach((r) => (groups[r.date] ||= []).push(r));
+  const label = (d) => (d === td ? 'Today' : d === addDays(td, 1) ? 'Tomorrow' : fmt(d, { weekday: 'long', day: 'numeric', month: 'long' }));
+  let month = '';
+  const body = Object.entries(groups).map(([d, list]) => {
+    const m = d.slice(0, 7), mh = m !== month ? `<h2 class="agmonth">${esc(fmt(d, { month: 'long', year: 'numeric' }))}</h2>` : ''; month = m;
+    return `${mh}<div class="agday"><h3 class="sec ${d === td ? 'agtoday' : ''}">${esc(label(d))}</h3><div class="list">${list.map((x) => `<${x.edit ? `button data-act="${x.edit}" data-id="${x.id}"` : `a href="${x.href}"`} class="card ev" style="--c:${x.color}">
+      <span class="evb"><b>${x.icon} ${esc(x.title)}</b><small>${esc(x.sub)}</small></span>${x.who ? whoChip(x.who) : ''}</${x.edit ? 'button' : 'a'}>`).join('')}</div></div>`;
+  }).join('');
+  return `${rows.length ? body : empty('🌤️', `Nothing planned in the next ${days} days.`)}
+    <button class="btn ghost wide" data-act="agenda-more">Show more (until ${esc(fmt(addDays(to, 60), { day: 'numeric', month: 'short', year: 'numeric' }))})</button>`;
+}
 function itemsOn(ds) {
   const out = [];
   eventInstances(ds, ds).forEach(({ e, s: start, last }) => {
@@ -747,6 +776,8 @@ const A = {
   'pick-day': (el) => { const d = el.dataset.day; if (d.slice(0, 7) !== S.calMonth) S.calMonth = d.slice(0, 7); S.day = d; render(); document.getElementById('dayhead')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); },
   'cal-prev': () => { S.calMonth = addMonths(S.calMonth + '-01', -1).slice(0, 7); render(); },
   'cal-next': () => { S.calMonth = addMonths(S.calMonth + '-01', 1).slice(0, 7); render(); },
+  'cal-view': (el) => { S.calView = el.dataset.id; try { localStorage.setItem('onstwee-calview', S.calView); } catch { /* */ } render(); window.scrollTo(0, 0); },
+  'agenda-more': () => { S.agendaDays = (S.agendaDays || 60) + 60; render(); },
   'cal-today': () => { S.calMonth = today().slice(0, 7); S.day = today(); if (route().id) go('#/calendar'); else render(); },
   'add-event': (el) => eventForm(el.dataset.date ? { date: el.dataset.date } : {}),
   'edit-event': (el) => eventForm(find('events', el.dataset.id)),
