@@ -32,3 +32,10 @@ Built as a website that installs on your iPhone like an app. It uses **Supabase*
 - **After any change:** change `onstwee-v1` to `onstwee-v2` (and so on) in `sw.js`, so phones load the new version.
 
 **Demo mode:** if `SUPABASE_URL` in `js/config.js` is empty, the app runs with sample data stored only on that device.
+
+## Telegram bot
+
+Message the Ons Twee bot to add things without opening the app (code: `supabase/functions/telegram`).
+Examples: `27 Nov Concordia scrips`, `Saterdag 14:00 Braai by Ma`, `koop melk, eiers`, `taak: bins vrydag`,
+`date: Perdry`, `life admin: renew licence`, `/vandag`, `/week`, `/lys groceries`. Send `/help` to the bot for the full list.
+Only two Telegram accounts can link to it, using the one-time code in `private.config` (`telegram_code`).
