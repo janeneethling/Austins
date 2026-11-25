@@ -3,7 +3,7 @@ import { CONFIG } from './config.js';
 
 export const DEMO = !CONFIG.SUPABASE_URL;
 export const TABLES = ['profiles', 'events', 'transactions', 'budgets', 'goals', 'goal_deposits', 'body_logs',
-  'lists', 'list_items', 'tasks', 'ideas', 'people', 'gifts', 'trips', 'trip_items'];
+  'lists', 'list_items', 'tasks', 'ideas', 'people', 'gifts', 'trips', 'trip_items', 'recipes'];
 const KEY_OF = (table) => (table === 'profiles' ? 'user_id' : 'id');
 
 let sb = null;

@@ -87,7 +87,7 @@ function render() {
   if (!S.me) return;
   const r = route();
   const view = VIEWS[r.name] || VIEWS.home;
-  const tab = { goals: 'money', list: 'lists', tasks: 'home', ideas: 'home', dates: 'home', person: 'home', trips: 'home', trip: 'home', settings: 'home' }[r.name] || r.name;
+  const tab = { goals: 'money', list: 'lists', recipes: 'lists', recipe: 'lists', tasks: 'home', ideas: 'home', dates: 'home', person: 'home', trips: 'home', trip: 'home', settings: 'home' }[r.name] || r.name;
   $app.innerHTML = `${DEMO ? '<div class="demo">Demo mode – sample data on this device only.</div>' : ''}
     <main>${view(r.id)}</main>
     <nav class="tabbar">${TABS.map(([id, ic, label]) => `<a href="#/${id}" class="tab ${tab === id ? 'on' : ''}"><span class="ti">${ic}</span><span>${label}</span></a>`).join('')}</nav>`;
@@ -334,7 +334,9 @@ const depositForm = (goalId) => openForm({
 // ================================================================== LISTS
 VIEWS.lists = () => {
   const lists = [...S.db.lists].sort((a, b) => (a.sort ?? 100) - (b.sort ?? 100) || a.name.localeCompare(b.name));
+  const rc = S.db.recipes.length, fav = S.db.recipes.filter((r) => r.status === 'favourite').length;
   return `${header('Lists', { add: 'add-list' })}
+    <a class="card lrow recipes-link" href="#/recipes"><span class="tic big">🍳</span><span class="txb"><b>Recipes</b><small>${rc ? `${rc} saved${fav ? ` · ❤️ ${fav}` : ''}` : 'Save recipes and ideas'}</small></span><span class="chev">›</span></a>
     <div class="list">${lists.map((l) => {
       const items = S.db.list_items.filter((i) => i.list_id === l.id); const open = items.filter((i) => !i.done).length;
       return `<a class="card lrow" href="#/list/${l.id}"><span class="tic big">${esc(l.emoji || '📝')}</span><span class="txb"><b>${esc(l.name)}</b><small>${open ? `${open} to get` : items.length ? 'All done ✓' : 'Empty'}</small></span><span class="chev">›</span></a>`;
@@ -362,6 +364,54 @@ const listForm = (row = {}) => openForm({
   title: row.id ? 'Edit list' : 'New list', table: 'lists', row,
   fields: [{ k: 'emoji', label: 'Emoji', type: 'emoji', options: ['📝', '🛒', '💊', '🏠', '🐶', '🎁', '🧹', '🌱', '👶', '🍷'] }, { k: 'name', label: 'Name', req: true, ph: 'e.g. Hardware store' }],
   defaults: { emoji: '📝' }, after: (r) => !row.id && go(`#/list/${r.id}`),
+});
+
+// ================================================================== RECIPES
+const RECIPE_STATUS = [['idea', '💡 Idea'], ['tried', '✅ Tried'], ['favourite', '❤️ Favourite']];
+const RECIPE_CATS = ['Breakfast', 'Lunch', 'Dinner', 'Braai', 'Sides & salads', 'Dessert', 'Baking', 'Snacks', 'Drinks', 'Other'];
+VIEWS.recipes = () => {
+  const f = S.recipeTab || 'all';
+  const list = S.db.recipes.filter((r) => f === 'all' || r.status === f)
+    .sort((a, b) => (a.status === 'favourite' ? 0 : 1) - (b.status === 'favourite' ? 0 : 1) || a.title.localeCompare(b.title));
+  const groups = {}; list.forEach((r) => (groups[r.category || 'Other'] ||= []).push(r));
+  const order = [...RECIPE_CATS, ...Object.keys(groups).filter((c) => !RECIPE_CATS.includes(c))].filter((c) => groups[c]);
+  return `${header('Recipes', { back: '#/lists', add: 'add-recipe' })}
+    <div class="segc wide">${[['all', 'All'], ...RECIPE_STATUS].map(([k, n]) => `<button class="${f === k ? 'on' : ''}" data-act="recipe-tab" data-id="${k}">${n}</button>`).join('')}</div>
+    ${list.length ? order.map((c) => `<h3 class="sec">${esc(c)}</h3><div class="list">${groups[c].map((r) => `<a class="card lrow" href="#/recipe/${r.id}"><span class="tic big">${esc(r.emoji || '🍽️')}</span>
+      <span class="txb"><b>${esc(r.title)}${r.status === 'favourite' ? ' ❤️' : ''}</b><small>${[r.status === 'idea' ? '💡 Idea' : r.status === 'tried' ? '✅ Tried' : '', r.time, r.servings ? `serves ${r.servings}` : '', r.link ? '🔗' : ''].filter(Boolean).map(esc).join(' · ')}</small></span><span class="chev">›</span></a>`).join('')}</div>`).join('')
+      : empty('🍳', f === 'all' ? 'Save a recipe or jot down an idea with ＋' : 'Nothing here yet.')}`;
+};
+const lines = (t) => String(t || '').split('\n').map((x) => x.trim()).filter(Boolean);
+VIEWS.recipe = (id) => {
+  const r = S.db.recipes.find((x) => x.id === id);
+  if (!r) return header('Not found', { back: '#/recipes' }) + empty('🤷', 'Recipe not found.');
+  const ing = lines(r.ingredients), steps = lines(r.method);
+  const host = (() => { try { return new URL(r.link).hostname.replace(/^www\./, ''); } catch { return r.link; } })();
+  return `${header(`${esc(r.emoji || '🍽️')} ${esc(r.title)}`, { back: '#/recipes' })}
+    <section class="card"><div class="segc wide">${RECIPE_STATUS.map(([k, n]) => `<button class="${r.status === k ? 'on' : ''}" data-act="recipe-status" data-id="${r.id}" data-v="${k}">${n}</button>`).join('')}</div>
+      <p class="muted">${[r.category, r.time ? `⏱️ ${r.time}` : '', r.servings ? `🍽️ Serves ${r.servings}` : ''].filter(Boolean).map(esc).join(' · ')}</p>
+      ${r.link ? `<a class="btn ghost wide" href="${esc(/^https?:\/\//i.test(r.link) ? r.link : 'https://' + r.link)}" target="_blank" rel="noopener">🔗 Open recipe · ${esc(host)}</a>` : ''}
+      <button class="link" data-act="edit-recipe" data-id="${r.id}">Edit</button></section>
+    ${ing.length ? `<div class="ch"><h3>🧺 Ingredients</h3><button class="link" data-act="recipe-to-groceries" data-id="${r.id}">＋ Add to Groceries</button></div>
+      <ul class="card rows ing">${ing.map((x) => `<li>${esc(x)}</li>`).join('')}</ul>` : ''}
+    ${steps.length ? `<h3 class="sec">👩‍🍳 Method</h3><ol class="card steps">${steps.map((x) => `<li>${esc(x.replace(/^\d+[.)]\s*/, ''))}</li>`).join('')}</ol>` : ''}
+    ${r.notes ? `<h3 class="sec">📝 Notes</h3><section class="card"><p class="notes">${esc(r.notes)}</p></section>` : ''}
+    ${!ing.length && !steps.length && !r.link ? empty('✍️', 'Tap Edit to add the ingredients, method or a link.') : ''}`;
+};
+const recipeForm = (row = {}) => openForm({
+  title: row.id ? 'Edit recipe' : 'New recipe or idea', table: 'recipes', row,
+  fields: [{ k: 'emoji', label: 'Emoji', type: 'emoji', options: ['🍽️', '🍝', '🥩', '🍗', '🐟', '🥗', '🍲', '🍕', '🌮', '🍰', '🍪', '🥞', '🍹'] },
+    { k: 'title', label: 'Name', req: true, ph: 'e.g. Ouma se melktert' },
+    { k: 'status', label: '', type: 'seg', options: RECIPE_STATUS },
+    { k: 'category', label: 'Type', type: 'select', half: true, options: RECIPE_CATS.map((c) => [c, c]) },
+    { k: 'time', label: 'Time', half: true, ph: 'e.g. 45 min' },
+    { k: 'servings', label: 'Serves', half: true, ph: 'e.g. 4' },
+    { k: 'link', label: 'Link', half: true, ph: 'https://…' },
+    { k: 'ingredients', label: 'Ingredients (one per line)', type: 'textarea', rows: 6, ph: '500 g mince\n1 onion\n2 cloves garlic' },
+    { k: 'method', label: 'Method (one step per line)', type: 'textarea', rows: 6 },
+    { k: 'notes', label: 'Notes', type: 'textarea' }],
+  defaults: { emoji: '🍽️', status: 'idea', category: 'Dinner' },
+  after: (r) => !row.id && go(`#/recipe/${r.id}`),
 });
 
 // ================================================================== HEALTH
@@ -631,7 +681,7 @@ function drawForm() {
     const lab = fd.label ? `<span>${esc(fd.label)}</span>` : '';
     const common = `name="${fd.k}" ${fd.req ? 'required' : ''} ${fd.autofocus && !f.row.id ? 'autofocus' : ''}`;
     switch (fd.type) {
-      case 'textarea': return `<label class="${cls}">${lab}<textarea ${common} rows="2" placeholder="${esc(fd.ph || '')}">${esc(val)}</textarea></label>`;
+      case 'textarea': return `<label class="${cls}">${lab}<textarea ${common} rows="${fd.rows || 2}" placeholder="${esc(fd.ph || '')}">${esc(val)}</textarea></label>`;
       case 'date': case 'time': return `<label class="${cls}">${lab}<input type="${fd.type}" ${common} value="${esc(val ? String(val).slice(0, fd.type === 'time' ? 5 : 10) : '')}"></label>`;
       case 'number': return `<label class="${cls}">${lab}<input type="number" inputmode="numeric" ${common} value="${esc(val)}" ${fd.min != null ? `min="${fd.min}"` : ''} ${fd.max != null ? `max="${fd.max}"` : ''}></label>`;
       case 'money': case 'decimal': return `<label class="${cls}">${lab}<input inputmode="decimal" ${common} value="${esc(val == null ? '' : typeof val === 'string' ? val : String(Number(val)))}" placeholder="${fd.type === 'money' ? 'R 0' : ''}"></label>`;
@@ -696,6 +746,18 @@ const A = {
   'toggle-item': (el) => guard(async () => { const i = find('list_items', el.dataset.id); i.done = !i.done; render(); await save('list_items', { id: i.id, done: i.done }); }),
   'del-item': (el) => guard(() => remove('list_items', el.dataset.id)),
   'clear-done': (el) => guard(async () => { for (const i of S.db.list_items.filter((x) => x.list_id === el.dataset.id && x.done)) await api.remove('list_items', i.id); await refresh('list_items'); }),
+  'recipe-tab': (el) => { S.recipeTab = el.dataset.id; render(); },
+  'add-recipe': () => recipeForm(), 'edit-recipe': (el) => recipeForm(find('recipes', el.dataset.id)),
+  'recipe-status': (el) => guard(() => save('recipes', { id: el.dataset.id, status: el.dataset.v })),
+  'recipe-to-groceries': (el) => guard(async () => {
+    const r = find('recipes', el.dataset.id); const g = S.db.lists.find((l) => l.name === 'Groceries');
+    if (!g) throw new Error('There is no “Groceries” list.');
+    const have = new Set(S.db.list_items.filter((i) => i.list_id === g.id && !i.done).map((i) => i.text.toLowerCase()));
+    const add = lines(r.ingredients).filter((x) => !have.has(x.toLowerCase()));
+    if (!add.length) return toast('Already on the grocery list ✓');
+    for (const text of add) await api.save('list_items', { list_id: g.id, text: text.slice(0, 80), qty: null, done: false });
+    await refresh('list_items'); toast(`Added ${add.length} item${add.length > 1 ? 's' : ''} to Groceries 🛒`);
+  }),
   'add-log': () => logForm(), 'edit-log': (el) => logForm(find('body_logs', el.dataset.id)),
   'add-task': () => taskForm(), 'edit-task': (el) => taskForm(find('tasks', el.dataset.id)),
   'toggle-task': (el) => guard(async () => {
