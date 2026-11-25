@@ -160,9 +160,30 @@ function nextTripLabel() {
   if (!t) return 'Plan one';
   return t.start_date ? (t.start_date > today() ? `${diffDays(today(), t.start_date)} days to go` : 'Happening now') : esc(t.name);
 }
+// Recurring events: every occurrence of every event that overlaps [from, to]. Editing an event edits the whole series.
+const REPEATS = [['none', 'Never'], ['daily', 'Every day'], ['weekly', 'Every week'], ['fortnightly', 'Every 2 weeks'], ['monthly', 'Every month'], ['yearly', 'Every year']];
+const REPEAT_LABEL = { daily: 'daily', weekly: 'weekly', fortnightly: 'every 2 weeks', monthly: 'monthly', yearly: 'yearly' };
+function eventInstances(from, to) {
+  const out = [];
+  S.db.events.forEach((e) => {
+    const len = e.end_date && e.end_date > e.date ? diffDays(e.date, e.end_date) : 0;
+    const push = (s) => { const last = addDays(s, len); if (s <= to && last >= from) out.push({ e, s, last }); };
+    const rep = e.repeat || 'none', until = e.repeat_until || '9999-12-31';
+    if (rep === 'none') return push(e.date);
+    const step = { daily: 1, weekly: 7, fortnightly: 14 }[rep];
+    if (step) {
+      let k = Math.max(0, Math.ceil(diffDays(e.date, addDays(from, -len)) / step));
+      for (let s = addDays(e.date, k * step); s <= to && s <= until; k++, s = addDays(e.date, k * step)) push(s);
+    } else {
+      const m = rep === 'yearly' ? 12 : 1;
+      for (let k = 0, s = e.date; s <= to && s <= until && k < 2400; k++, s = addMonths(e.date, k * m)) push(s);
+    }
+  });
+  return out;
+}
 function upcomingItems(days) {
   const td = today(), end = addDays(td, days); const out = [];
-  S.db.events.forEach((e) => { const last = e.end_date || e.date; if (last >= td && e.date <= end) out.push({ date: e.date < td ? td : e.date, time: hm(e.start_time), title: e.title, icon: '📅', who: e.who, href: `#/calendar/${e.date}` }); });
+  eventInstances(td, end).forEach(({ e, s }) => out.push({ date: s < td ? td : s, time: hm(e.start_time), title: e.title, icon: '📅', who: e.who, href: `#/calendar/${s < td ? td : s}` }));
   S.db.people.forEach((p) => { const d = nextOccurrence(p); if (d <= end) out.push({ date: d, title: personTitle(p, d), icon: p.kind === 'birthday' ? '🎂' : p.kind === 'anniversary' ? '💍' : '⭐', href: `#/person/${p.id}` }); });
   S.db.trips.forEach((t) => { if (t.start_date && t.start_date >= td && t.start_date <= end) out.push({ date: t.start_date, title: t.name, icon: '✈️', href: `#/trip/${t.id}` }); });
   return out.sort((a, b) => (a.date + (a.time || '')).localeCompare(b.date + (b.time || '')));
@@ -183,7 +204,7 @@ const MAX_LANES = 3;
 // Everything that shows as a bar on the month grid: events (can span days), birthdays/anniversaries, trips.
 function spansBetween(from, to) {
   const out = [];
-  S.db.events.forEach((e) => { const last = e.end_date && e.end_date > e.date ? e.end_date : e.date; if (e.date <= to && last >= from) out.push({ s: e.date, e: last, title: e.title, color: evColor(e) }); });
+  eventInstances(from, to).forEach(({ e, s, last }) => out.push({ s, e: last, title: e.title, color: evColor(e) }));
   S.db.people.forEach((p) => { const d = nextOccurrence(p, from); if (d && d <= to) out.push({ s: d, e: d, title: (p.kind === 'birthday' ? '🎂 ' : p.kind === 'anniversary' ? '💍 ' : '⭐ ') + p.name, color: '#ef5da8' }); });
   S.db.trips.forEach((t) => { if (!t.start_date) return; const last = t.end_date || t.start_date; if (t.start_date <= to && last >= from) out.push({ s: t.start_date, e: last, title: '✈️ ' + t.name, color: '#3b9eea' }); });
   return out;
@@ -224,13 +245,11 @@ VIEWS.calendar = (pick) => {
 };
 function itemsOn(ds) {
   const out = [];
-  S.db.events.forEach((e) => {
-    const last = e.end_date && e.end_date > e.date ? e.end_date : e.date;
-    if (e.date <= ds && ds <= last) {
-      const multi = last !== e.date;
-      const sub = [multi ? `Day ${diffDays(e.date, ds) + 1} of ${diffDays(e.date, last) + 1}` : '', e.start_time && ds === e.date ? hm(e.start_time) + (e.end_time && !multi ? '–' + hm(e.end_time) : '') : '', e.location].filter(Boolean).join(' · ');
-      out.push({ id: e.id, edit: 'edit-event', title: e.title, sub: sub || 'All day', icon: '📅', who: e.who, color: evColor(e), t: hm(e.start_time) || '00:00' });
-    }
+  eventInstances(ds, ds).forEach(({ e, s: start, last }) => {
+    const multi = last !== start;
+    const sub = [multi ? `Day ${diffDays(start, ds) + 1} of ${diffDays(start, last) + 1}` : '', e.start_time && ds === start ? hm(e.start_time) + (e.end_time && !multi ? '–' + hm(e.end_time) : '') : '', e.location,
+      e.repeat && e.repeat !== 'none' ? `🔁 ${REPEAT_LABEL[e.repeat]}` : ''].filter(Boolean).join(' · ');
+    out.push({ id: e.id, edit: 'edit-event', title: e.title, sub: sub || 'All day', icon: '📅', who: e.who, color: evColor(e), t: hm(e.start_time) || '00:00' });
   });
   S.db.people.forEach((p) => { if (nextOccurrence(p, ds) === ds) out.push({ href: `#/person/${p.id}`, title: personTitle(p, ds), sub: p.kind === 'birthday' ? 'Birthday' : p.kind === 'anniversary' ? 'Anniversary' : 'Important date', icon: p.kind === 'birthday' ? '🎂' : p.kind === 'anniversary' ? '💍' : '⭐', color: '#ef5da8', t: '00:00' }); });
   S.db.trips.forEach((t) => { if (t.start_date && t.start_date <= ds && ds <= (t.end_date || t.start_date)) out.push({ href: `#/trip/${t.id}`, title: t.name, sub: t.destination || 'Trip', icon: '✈️', color: '#3b9eea', t: '00:01' }); });
@@ -243,12 +262,13 @@ const eventForm = (row = {}) => openForm({
     { k: 'date', label: 'Date', type: 'date', req: true, half: true }, { k: 'end_date', label: 'End date (optional)', type: 'date', half: true },
     { k: 'start_time', label: 'Start', type: 'time', half: true }, { k: 'end_time', label: 'End', type: 'time', half: true },
     { k: 'location', label: 'Where?', ph: '📍' },
+    { k: 'repeat', label: 'Repeat', type: 'select', half: true, options: REPEATS }, { k: 'repeat_until', label: 'Until (optional)', type: 'date', half: true },
     { k: 'color', label: 'Colour', type: 'color', options: EVENT_COLORS },
     { k: 'who', label: 'Who', type: 'seg', options: [['both', 'Both of us'], ...people2().map((p) => [p.user_id, p.name])] },
     { k: 'notes', label: 'Notes', type: 'textarea' },
   ],
-  defaults: { date: S.day || today(), who: 'both', color: EVENT_COLORS[0][0] },
-  validate: (v) => (v.end_date && v.end_date < v.date ? 'End date is before the start date.' : null),
+  defaults: { date: S.day || today(), who: 'both', color: EVENT_COLORS[0][0], repeat: 'none' },
+  validate: (v) => (v.end_date && v.end_date < v.date ? 'End date is before the start date.' : v.repeat_until && v.repeat_until < v.date ? '“Until” is before the start date.' : null),
 });
 
 // ================================================================== MONEY

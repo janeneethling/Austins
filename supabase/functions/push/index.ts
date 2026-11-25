@@ -1,5 +1,5 @@
 // Ons Twee – Supabase Edge Function that sends push notifications.
-//   { "type": "reminders" }                     every 5 min: events starting within the hour
+//   { "type": "reminders" }                     every 5 min: events starting within the hour (incl. recurring)
 //   { "type": "digest" }                        07:00 daily: chores, birthdays, trips, today's events
 //   { "type": "budget", "transaction_id": ... } after an expense: alert if a category just went over budget
 //   { "type": "added", "table", "id", "by" }    after an insert: tell the OTHER partner what was added
@@ -51,6 +51,24 @@ function nextOccurrence(p: { month: number; day: number }, from: string) {
 }
 const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 const niceDate = (ds?: string | null) => { if (!ds) return ""; const d = new Date(ds + "T00:00:00Z"); return `${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
+const addMonthsD = (ds: string, n: number) => { const d = new Date(ds + "T00:00:00Z"); const day = d.getUTCDate(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() + n);
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate(); d.setUTCDate(Math.min(day, last)); return d.toISOString().slice(0, 10); };
+const daysBetween = (a: string, b: string) => Math.round((new Date(b + "T00:00:00Z").getTime() - new Date(a + "T00:00:00Z").getTime()) / 86400000);
+// Recurring events: does an occurrence START on ds? Does one COVER ds (multi-day)?
+type Ev = { date: string; end_date?: string | null; repeat?: string | null; repeat_until?: string | null };
+function startsOn(e: Ev, ds: string) {
+  if (ds < e.date || (e.repeat_until && ds > e.repeat_until)) return false;
+  const rep = e.repeat || "none"; if (rep === "none") return ds === e.date;
+  const step = ({ daily: 1, weekly: 7, fortnightly: 14 } as Record<string, number>)[rep];
+  if (step) return daysBetween(e.date, ds) % step === 0;
+  const m = rep === "yearly" ? 12 : 1; const months = (Number(ds.slice(0, 4)) - Number(e.date.slice(0, 4))) * 12 + Number(ds.slice(5, 7)) - Number(e.date.slice(5, 7));
+  return months % m === 0 && addMonthsD(e.date, months) === ds;
+}
+function occursOn(e: Ev, ds: string) {
+  const len = e.end_date && e.end_date > e.date ? daysBetween(e.date, e.end_date) : 0;
+  for (let k = 0; k <= len; k++) { const d = new Date(ds + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - k); if (startsOn(e, d.toISOString().slice(0, 10))) return true; }
+  return false;
+}
 
 async function subs(kind: string, users?: string[]) {
   const { data } = await db.from("push_subscriptions").select("*");
@@ -73,12 +91,20 @@ async function profiles() { const { data } = await db.from("profiles").select("u
 // ---- 1. Event reminders --------------------------------------------------
 async function reminders() {
   const now = new Date(), soon = new Date(now.getTime() + 62 * 60000);
-  const { data: events, error } = await db.from("events").update({ reminder_sent: true })
-    .eq("reminder_sent", false).gt("start_at", now.toISOString()).lte("start_at", soon.toISOString()).select("*");
+  const { data: once, error } = await db.from("events").update({ reminder_sent: true })
+    .eq("repeat", "none").eq("reminder_sent", false).gt("start_at", now.toISOString()).lte("start_at", soon.toISOString()).select("*");
   if (error) throw error;
+  const events = (once ?? []).map((e) => ({ ...e, at: new Date(e.start_at) }));
+  // recurring events: today's / tomorrow's occurrence, once per occurrence (tracked in last_reminded)
+  const { data: rec } = await db.from("events").select("*").neq("repeat", "none").not("start_time", "is", null);
+  for (const e of rec ?? []) for (const d of [sast(now), addDays(sast(now), 1)]) {
+    if (e.last_reminded === d || !startsOn(e, d)) continue;
+    const at = new Date(`${d}T${String(e.start_time).slice(0, 8)}+02:00`);
+    if (at > now && at <= soon) { await db.from("events").update({ last_reminded: d }).eq("id", e.id); events.push({ ...e, date: d, at }); }
+  }
   let n = 0;
-  for (const e of events ?? []) {
-    const mins = Math.max(1, Math.round((new Date(e.start_at).getTime() - now.getTime()) / 60000));
+  for (const e of events) {
+    const mins = Math.max(1, Math.round((e.at.getTime() - now.getTime()) / 60000));
     const users = e.who && e.who !== "both" ? [e.who] : undefined;
     n += await send(await subs("events", users), {
       title: `📅 ${e.title} ${mins >= 55 ? "in 1 hour" : `in ${mins} min`}`,
@@ -96,7 +122,7 @@ async function digest() {
     db.from("tasks").select("*").eq("done", false).lte("due", today),
     db.from("people").select("*"),
     db.from("trips").select("*").eq("start_date", tomorrow),
-    db.from("events").select("*").lte("date", today).or(`end_date.gte.${today},and(end_date.is.null,date.eq.${today})`),
+    db.from("events").select("*").lte("date", today),
     profiles(),
   ]);
   const dates: string[] = [];
@@ -110,7 +136,7 @@ async function digest() {
   let n = 0;
   for (const s of await subs("digest")) {
     const mine = (tasks ?? []).filter((t) => !t.assignee || t.assignee === s.user_id);
-    const evs = (events ?? []).filter((e) => !e.who || e.who === "both" || e.who === s.user_id);
+    const evs = (events ?? []).filter((e) => occursOn(e, today) && (!e.who || e.who === "both" || e.who === s.user_id));
     const lines: string[] = [];
     if (evs.length) lines.push(`📅 Today: ${evs.map((e) => (e.start_time ? String(e.start_time).slice(0, 5) + " " : "") + e.title).join(", ")}`);
     if (mine.length) lines.push(`✅ ${mine.length} chore${mine.length > 1 ? "s" : ""}: ${mine.slice(0, 3).map((t) => t.title).join(", ")}${mine.length > 3 ? "…" : ""}`);

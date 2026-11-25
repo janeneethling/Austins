@@ -46,6 +46,24 @@ function mkDate(d: number, m: number, y?: number) {
   if (!y && ds < addDays(t, -7)) ds = `${yy + 1}-${pad(m)}-${pad(d)}`;
   return ds;
 }
+const addMonthsD = (ds: string, n: number) => { const d = new Date(ds + "T00:00:00Z"); const day = d.getUTCDate(); d.setUTCDate(1); d.setUTCMonth(d.getUTCMonth() + n);
+  const last = new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth() + 1, 0)).getUTCDate(); d.setUTCDate(Math.min(day, last)); return d.toISOString().slice(0, 10); };
+const daysBetween = (a: string, b: string) => Math.round((new Date(b + "T00:00:00Z").getTime() - new Date(a + "T00:00:00Z").getTime()) / 86400000);
+// Recurring events: does an occurrence START on ds? Does one COVER ds (multi-day)?
+type Ev = { date: string; end_date?: string | null; repeat?: string | null; repeat_until?: string | null };
+function startsOn(e: Ev, ds: string) {
+  if (ds < e.date || (e.repeat_until && ds > e.repeat_until)) return false;
+  const rep = e.repeat || "none"; if (rep === "none") return ds === e.date;
+  const step = ({ daily: 1, weekly: 7, fortnightly: 14 } as Record<string, number>)[rep];
+  if (step) return daysBetween(e.date, ds) % step === 0;
+  const m = rep === "yearly" ? 12 : 1; const months = (Number(ds.slice(0, 4)) - Number(e.date.slice(0, 4))) * 12 + Number(ds.slice(5, 7)) - Number(e.date.slice(5, 7));
+  return months % m === 0 && addMonthsD(e.date, months) === ds;
+}
+function occursOn(e: Ev, ds: string) {
+  const len = e.end_date && e.end_date > e.date ? daysBetween(e.date, e.end_date) : 0;
+  for (let k = 0; k <= len; k++) { const d = new Date(ds + "T00:00:00Z"); d.setUTCDate(d.getUTCDate() - k); if (startsOn(e, d.toISOString().slice(0, 10))) return true; }
+  return false;
+}
 type Found = { date?: string; end?: string; time?: string; rest: string };
 function findDate(text: string): Found {
   let s = " " + text + " ", date: string | undefined, end: string | undefined, time: string | undefined;
@@ -89,6 +107,7 @@ const HELP = `<b>Ons Twee bot</b> – send me things to add:
 📅 <code>27 Nov Concordia scrips</code>
 📅 <code>Saterdag 14:00 Braai by Ma</code>
 📅 <code>18-26 Des Bruce on the farm</code>
+🔁 <code>Padel elke Dinsdag 18:00</code>
 🛒 <code>koop melk, eiers, brood</code>
 💊 <code>apteek: sunscreen</code>
 ✅ <code>taak: bins uitsit vrydag</code>
@@ -108,9 +127,17 @@ async function addItems(listName: string, text: string, by: string | null) {
   return `✅ Added to ${l.emoji ?? ""} <b>${escH(l.name)}</b>:\n${items.map((x) => "• " + escH(x)).join("\n")}`;
 }
 async function eventsBetween(a: string, b: string) {
-  const { data } = await db.from("events").select("*").lte("date", b).or(`end_date.gte.${a},and(end_date.is.null,date.gte.${a})`).order("date").order("start_time");
-  return data ?? [];
+  const { data } = await db.from("events").select("*").lte("date", b);
+  const out: Record<string, unknown>[] = [];
+  for (let d = a; d <= b; d = addDays(d, 1)) for (const e of data ?? []) {
+    if (!startsOn(e, d) && !(d === a && occursOn(e, d))) continue;
+    const len = e.end_date && e.end_date > e.date ? daysBetween(e.date, e.end_date) : 0; let s0 = d; while (!startsOn(e, s0)) s0 = addDays(s0, -1);
+    out.push({ ...e, date: s0, end_date: len ? addDays(s0, len) : null });
+  }
+  return out.sort((x, y) => String(x.date).localeCompare(String(y.date)) || String(x.start_time ?? "").localeCompare(String(y.start_time ?? ""))) as any[];
 }
+const REPEAT_RX: [RegExp, string][] = [[new RegExp(`\\b(elke|every)(?=\\s+(${DOW_RX})\\b)`, "i"), "weekly"], [/\b(elke dag|every day|daily|daagliks)\b/i, "daily"], [/\b(elke 2 weke|elke twee weke|every 2 weeks|every two weeks|fortnightly)\b/i, "fortnightly"],
+  [/\b(elke week|every week|weekly|weekliks)\b/i, "weekly"], [/\b(elke maand|every month|monthly|maandeliks)\b/i, "monthly"], [/\b(elke jaar|every year|yearly|annually|jaarliks)\b/i, "yearly"]];
 async function handle(text: string, by: string | null): Promise<string> {
   const t = text.trim(); const low = t.toLowerCase();
   if (/^\/(help|hulp)/.test(low)) return HELP;
@@ -154,12 +181,14 @@ async function handle(text: string, by: string | null): Promise<string> {
   }
   // calendar
   const src = /^(cal|kal|kalender|calendar|event|afspraak)$/.test(head) ? body : t;
-  const f = findDate(src);
+  let repeat = "none", src2 = src;
+  for (const [rx, r] of REPEAT_RX) if (rx.test(src2)) { repeat = r; src2 = src2.replace(rx, " "); break; }
+  const f = findDate(src2);
   if (!f.date) return `I couldn't find a date in that 🤔\nTry: <code>27 Nov ${escH(src.slice(0, 40))}</code>\nor <code>koop ${escH(src.slice(0, 40))}</code> for groceries. /help shows all options.`;
   if (!f.rest) return "What's the event called?";
-  const { error } = await db.from("events").insert({ title: f.rest.slice(0, 120), date: f.date, end_date: f.end ?? null, start_time: f.time ?? null, who: "both", created_by: by });
+  const { error } = await db.from("events").insert({ title: f.rest.slice(0, 120), date: f.date, end_date: f.end ?? null, start_time: f.time ?? null, who: "both", repeat, created_by: by });
   if (error) throw error;
-  return `📅 Added: <b>${escH(f.rest)}</b>\n${fmtDate(f.date)}${f.end ? " – " + fmtDate(f.end) : ""}${f.time ? " at " + f.time : " (all day)"}`;
+  return `📅 Added: <b>${escH(f.rest)}</b>\n${fmtDate(f.date)}${f.end ? " – " + fmtDate(f.end) : ""}${f.time ? " at " + f.time : " (all day)"}${repeat !== "none" ? `\n🔁 Repeats ${repeat === "fortnightly" ? "every 2 weeks" : repeat}` : ""}`;
 }
 
 Deno.serve(async (req) => {
