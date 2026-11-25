@@ -87,7 +87,7 @@ function render() {
   if (!S.me) return;
   const r = route();
   const view = VIEWS[r.name] || VIEWS.home;
-  const tab = { goals: 'money', list: 'lists', recipes: 'lists', recipe: 'lists', tasks: 'home', ideas: 'home', dates: 'home', person: 'home', trips: 'home', trip: 'home', settings: 'home' }[r.name] || r.name;
+  const tab = { goals: 'money', list: 'lists', recipes: 'lists', recipe: 'lists', tasks: 'home', ideas: 'home', gifts: 'home', dates: 'home', person: 'home', trips: 'home', trip: 'home', settings: 'home' }[r.name] || r.name;
   $app.innerHTML = `${DEMO ? '<div class="demo">Demo mode – sample data on this device only.</div>' : ''}
     <main>${view(r.id)}</main>
     <nav class="tabbar">${TABS.map(([id, ic, label]) => `<a href="#/${id}" class="tab ${tab === id ? 'on' : ''}"><span class="ti">${ic}</span><span>${label}</span></a>`).join('')}</nav>`;
@@ -112,7 +112,7 @@ VIEWS.home = () => {
   const tiles = [
     ['#/recipes', '🍳', 'Recipes', S.db.recipes.length ? `${S.db.recipes.length} saved` : 'Add one'],
     ['#/ideas', '💡', 'Date nights', `${S.db.ideas.filter((i) => !i.done && i.kind === 'date').length} ideas`],
-    ['#/dates', '🎁', 'Dates & gifts', nextPersonLabel()],
+    ['#/gifts', '🎁', 'Gift ideas', `${S.db.gifts.filter((g) => g.for_user && g.status !== 'given').length} ideas`],
     ['#/trips', '✈️', 'Trips', nextTripLabel()],
     ['#/goals', '🎯', 'Savings', `${S.db.goals.length} goals`],
     ['#/settings', '⚙️', 'Settings', esc(me()?.name || '')],
@@ -608,6 +608,34 @@ const personForm = (row = {}) => openForm({
   defaults: { kind: 'birthday', month: 1 },
   after: (r) => !row.id && go(`#/person/${r.id}`),
 });
+// ---------- gift ideas: one wishlist per person (both can see both)
+const GIFT_ST = { idea: '🎁 Want', bought: '🛍️ Bought', given: '✅ Got it' };
+VIEWS.gifts = () => {
+  const ps = people2(); if (!ps.length) return header('Gift ideas', { back: '#/home' });
+  const who = ps.some((p) => p.user_id === S.giftFor) ? S.giftFor : ps[0].user_id; S.giftFor = who;
+  const list = S.db.gifts.filter((g) => g.for_user === who);
+  const open = list.filter((g) => g.status !== 'given').sort((a, b) => (a.created_at || '').localeCompare(b.created_at || ''));
+  const got = list.filter((g) => g.status === 'given');
+  const name = profile(who)?.name || '';
+  const row = (g) => `<li class="task ${g.status === 'given' ? 'done' : ''}"><button class="tb" data-act="edit-wish" data-id="${g.id}"><b>${esc(g.idea)}</b>
+      <small>${[g.price ? money(g.price) : '', g.notes, g.link ? '🔗 link' : ''].filter(Boolean).map(esc).join(' · ')}</small></button>
+    ${g.link ? `<a class="pill" href="${esc(/^https?:\/\//i.test(g.link) ? g.link : 'https://' + g.link)}" target="_blank" rel="noopener">Open</a>` : ''}
+    <button class="pill st-${g.status}" data-act="cycle-gift" data-id="${g.id}">${GIFT_ST[g.status] || GIFT_ST.idea}</button></li>`;
+  return `${header('Gift ideas', { back: '#/home', add: 'add-wish' })}
+    <div class="segc wide">${ps.map((p) => `<button class="${p.user_id === who ? 'on' : ''}" data-act="gift-for" data-id="${p.user_id}">${avatar(p, 20)} ${esc(p.name)}</button>`).join('')}</div>
+    <p class="muted small">Things ${esc(name)} would love. Tap the status to mark it bought or received.</p>
+    ${open.length ? `<ul class="card rows">${open.map(row).join('')}</ul>` : empty('🎁', `${name}'s list is empty – tap ＋ to add an idea.`)}
+    ${got.length ? `<h3 class="sec muted">Got it (${got.length})</h3><ul class="card rows">${got.map(row).join('')}</ul>` : ''}`;
+};
+const wishForm = (row = {}) => openForm({
+  title: row.id ? 'Edit gift idea' : 'New gift idea', table: 'gifts', row,
+  fields: [{ k: 'for_user', label: 'Whose list', type: 'seg', options: people2().map((p) => [p.user_id, p.name]) },
+    { k: 'idea', label: 'Gift idea', req: true, ph: 'e.g. Padel racket' },
+    { k: 'price', label: 'Price (R)', type: 'money', half: true }, { k: 'status', label: 'Status', type: 'select', half: true, options: Object.entries(GIFT_ST) },
+    { k: 'link', label: 'Link', ph: 'https://…' }, { k: 'notes', label: 'Notes', type: 'textarea', ph: 'Size, colour, where to buy…' }],
+  defaults: { for_user: S.giftFor || S.me, status: 'idea' },
+  after: (r) => { S.giftFor = r.for_user; },
+});
 const giftForm = (row = {}, personId) => openForm({
   title: row.id ? 'Edit gift' : 'Gift idea', table: 'gifts', row,
   fields: [{ k: 'idea', label: 'Idea', req: true, ph: 'e.g. Spa voucher' }, { k: 'price', label: 'Price (R)', type: 'money', half: true },
@@ -826,6 +854,8 @@ const A = {
   },
   'add-person': () => personForm(), 'edit-person': (el) => personForm(find('people', el.dataset.id)),
   'add-gift': (el) => giftForm({}, el.dataset.id), 'edit-gift': (el) => giftForm(find('gifts', el.dataset.id)),
+  'gift-for': (el) => { S.giftFor = el.dataset.id; render(); },
+  'add-wish': () => wishForm(), 'edit-wish': (el) => wishForm(find('gifts', el.dataset.id)),
   'cycle-gift': (el) => guard(async () => { const g = find('gifts', el.dataset.id); const n = { idea: 'bought', bought: 'given', given: 'idea' }[g.status]; await save('gifts', { id: g.id, status: n }); }),
   'add-trip': () => tripForm(), 'edit-trip': (el) => tripForm(find('trips', el.dataset.id)),
   'toggle-tripitem': (el) => guard(async () => { const i = find('trip_items', el.dataset.id); await save('trip_items', { id: i.id, done: !i.done }); }),
