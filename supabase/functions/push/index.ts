@@ -2,6 +2,7 @@
 //   { "type": "reminders" }                     every 5 min: events starting within the hour
 //   { "type": "digest" }                        07:00 daily: chores, birthdays, trips, today's events
 //   { "type": "budget", "transaction_id": ... } after an expense: alert if a category just went over budget
+//   { "type": "added", "table", "id", "by" }    after an insert: tell the OTHER partner what was added
 // Keys + shared secret are read from the database (private.config via public.push_config(), service role only).
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided automatically by Supabase.
 
@@ -48,6 +49,8 @@ function nextOccurrence(p: { month: number; day: number }, from: string) {
   }
   return "9999-12-31";
 }
+const MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const niceDate = (ds?: string | null) => { if (!ds) return ""; const d = new Date(ds + "T00:00:00Z"); return `${["Sun","Mon","Tue","Wed","Thu","Fri","Sat"][d.getUTCDay()]} ${d.getUTCDate()} ${MONTHS[d.getUTCMonth()]}`; };
 
 async function subs(kind: string, users?: string[]) {
   const { data } = await db.from("push_subscriptions").select("*");
@@ -140,12 +143,54 @@ async function budget(txId: string) {
   });
 }
 
+// ---- 4. "Something was added" – notify the other partner ------------------
+const ADDED_TABLES = ["events", "tasks", "list_items", "ideas", "trips", "people", "goals"];
+async function added(table: string, id: string, by?: string | null) {
+  if (!ADDED_TABLES.includes(table)) return 0;
+  const { data: r } = await db.from(table).select("*").eq("id", id).maybeSingle();
+  if (!r) return 0;
+  const creator = by ?? r.created_by;
+  const name = (await profiles()).find((p) => p.user_id === creator)?.name || "Jou maat";
+  let title = "", body = "", url = "./#/home";
+  switch (table) {
+    case "events":
+      title = `📅 ${name} added: ${r.title}`;
+      body = [niceDate(r.date), r.start_time ? String(r.start_time).slice(0, 5) : "", r.location].filter(Boolean).join(" · ");
+      url = `./#/calendar/${r.date}`; break;
+    case "tasks":
+      title = `✅ ${name} added a chore: ${r.title}`;
+      body = r.due ? `Due ${niceDate(r.due)}` : ""; url = "./#/tasks"; break;
+    case "list_items": {
+      const { data: l } = await db.from("lists").select("id,name,emoji").eq("id", r.list_id).maybeSingle();
+      title = `${l?.emoji ?? "🛒"} ${name} added to ${l?.name ?? "a list"}`;
+      body = [r.text, r.qty].filter(Boolean).join(" · "); url = l ? `./#/list/${l.id}` : "./#/lists"; break;
+    }
+    case "ideas":
+      title = r.kind === "bucket" ? `🌍 ${name} added to the bucket list` : `💡 ${name} added a date idea`;
+      body = r.title; url = "./#/ideas"; break;
+    case "trips":
+      title = `✈️ ${name} added a trip: ${r.name}`;
+      body = [r.destination, r.start_date ? niceDate(r.start_date) : ""].filter(Boolean).join(" · "); url = `./#/trip/${r.id}`; break;
+    case "people":
+      title = `🎂 ${name} added ${r.name}`;
+      body = `${r.kind === "anniversary" ? "Anniversary" : r.kind === "birthday" ? "Birthday" : "Date"}: ${r.day} ${MONTHS[r.month - 1]}`; url = `./#/person/${r.id}`; break;
+    case "goals":
+      title = `🎯 ${name} added a savings goal: ${r.name}`;
+      body = `Target ${rands(Number(r.target))}`; url = "./#/goals"; break;
+  }
+  const targets = (await subs("added")).filter((s) => s.user_id !== creator);
+  return await send(targets, { title, body, url, tag: `add-${table}-${id}` });
+}
+
 Deno.serve(async (req) => {
   try {
     const cfg = await config();
     if (!cfg.cron_secret || req.headers.get("x-cron-secret") !== cfg.cron_secret) return new Response("unauthorised", { status: 401 });
     const body = await req.json().catch(() => ({}));
-    const sent = body.type === "digest" ? await digest() : body.type === "budget" ? await budget(body.transaction_id) : await reminders();
+    const sent = body.type === "digest" ? await digest()
+      : body.type === "budget" ? await budget(body.transaction_id)
+      : body.type === "added" ? await added(body.table, body.id, body.by)
+      : await reminders();
     return Response.json({ ok: true, sent });
   } catch (e) {
     console.error(e);

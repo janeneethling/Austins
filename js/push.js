@@ -18,7 +18,8 @@ export async function currentSub() {
   const reg = await navigator.serviceWorker.ready;
   return reg.pushManager ? reg.pushManager.getSubscription() : null;
 }
-export const getPrefs = () => { try { return { events: true, digest: true, budget: true, ...JSON.parse(localStorage.getItem('onstwee-push-prefs') || '{}') }; } catch { return { events: true, digest: true, budget: true }; } };
+const DEFAULT_PREFS = { events: true, digest: true, budget: true, added: true };
+export const getPrefs = () => { try { return { ...DEFAULT_PREFS, ...JSON.parse(localStorage.getItem('onstwee-push-prefs') || '{}') }; } catch { return { ...DEFAULT_PREFS }; } };
 export async function savePrefs(prefs) {
   localStorage.setItem('onstwee-push-prefs', JSON.stringify(prefs));
   const sub = await currentSub();
@@ -31,6 +32,14 @@ export async function enablePush(userId) {
   let sub = await reg.pushManager.getSubscription();
   if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64(CONFIG.VAPID_PUBLIC_KEY) });
   await api.save('push_subscriptions', { endpoint: sub.endpoint, user_id: userId, subscription: sub.toJSON(), prefs: getPrefs() });
+}
+// Re-send this phone's subscription to the database on every app start, so a lost or failed save heals itself.
+export async function syncPush(userId) {
+  if (DEMO) return false;
+  const sub = await currentSub();
+  if (!sub) return false;
+  await api.save('push_subscriptions', { endpoint: sub.endpoint, user_id: userId, subscription: sub.toJSON(), prefs: getPrefs() });
+  return true;
 }
 export async function disablePush() {
   const sub = await currentSub();

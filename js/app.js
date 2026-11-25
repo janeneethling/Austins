@@ -1,6 +1,6 @@
 import { CONFIG } from './config.js';
 import { api, DEMO, TABLES, resetDemo } from './api.js';
-import { pushStatus, enablePush, disablePush, currentSub, getPrefs, savePrefs, testNotification } from './push.js';
+import { pushStatus, enablePush, disablePush, currentSub, syncPush, getPrefs, savePrefs, testNotification } from './push.js';
 
 // ================================================================== constants
 const EXPENSE_CATS = [
@@ -176,24 +176,49 @@ function personTitle(p, d) {
 const bar = (v, max, color) => `<span class="bar"><i style="width:${Math.min(100, max ? (v / max) * 100 : 0)}%;${v > max ? 'background:var(--no)' : color ? `background:${color}` : ''}"></i></span>`;
 
 // ================================================================== CALENDAR
+const EVENT_COLORS = [['#2fb36d', 'Green'], ['#f2b632', 'Yellow'], ['#e5484d', 'Red'], ['#3b9eea', 'Blue'], ['#9b6cf0', 'Purple'],
+  ['#ef5da8', 'Pink'], ['#f48a2a', 'Orange'], ['#14b8a6', 'Teal'], ['#8a9199', 'Grey']];
+const evColor = (e) => e.color || (e.who && e.who !== 'both' ? profile(e.who)?.color : null) || EVENT_COLORS[0][0];
+const MAX_LANES = 3;
+// Everything that shows as a bar on the month grid: events (can span days), birthdays/anniversaries, trips.
+function spansBetween(from, to) {
+  const out = [];
+  S.db.events.forEach((e) => { const last = e.end_date && e.end_date > e.date ? e.end_date : e.date; if (e.date <= to && last >= from) out.push({ s: e.date, e: last, title: e.title, color: evColor(e) }); });
+  S.db.people.forEach((p) => { const d = nextOccurrence(p, from); if (d && d <= to) out.push({ s: d, e: d, title: (p.kind === 'birthday' ? '🎂 ' : p.kind === 'anniversary' ? '💍 ' : '⭐ ') + p.name, color: '#ef5da8' }); });
+  S.db.trips.forEach((t) => { if (!t.start_date) return; const last = t.end_date || t.start_date; if (t.start_date <= to && last >= from) out.push({ s: t.start_date, e: last, title: '✈️ ' + t.name, color: '#3b9eea' }); });
+  return out;
+}
+function weekRow(ws, td) {
+  const we = addDays(ws, 6);
+  const spans = spansBetween(ws, we).map((x) => ({ ...x, c0: x.s < ws ? 0 : diffDays(ws, x.s), c1: x.e > we ? 6 : diffDays(ws, x.e), cont: x.s < ws, more: x.e > we }))
+    .sort((a, b) => a.c0 - b.c0 || (b.c1 - b.c0) - (a.c1 - a.c0));
+  const lanes = []; const hidden = Array(7).fill(0);
+  spans.forEach((x) => {
+    let l = lanes.findIndex((used) => used.every((u) => x.c1 < u[0] || x.c0 > u[1]));
+    if (l === -1) { lanes.push([]); l = lanes.length - 1; }
+    lanes[l].push([x.c0, x.c1]); x.lane = l;
+  });
+  spans.forEach((x) => { if (x.lane >= MAX_LANES) for (let c = x.c0; c <= x.c1; c++) hidden[c]++; });
+  const days = Array.from({ length: 7 }, (_, i) => addDays(ws, i));
+  return `<div class="wkrow">
+    <div class="wkdays">${days.map((ds) => `<button class="mday ${ds.slice(0, 7) !== S.calMonth ? 'out' : ''} ${ds === td ? 'today' : ''} ${ds === S.day ? 'sel' : ''} ${dow(ds) === 6 ? 'sun' : ''}" data-act="pick-day" data-day="${ds}"><span class="dn">${Number(ds.slice(8))}</span></button>`).join('')}</div>
+    <div class="wkbars">${spans.filter((x) => x.lane < MAX_LANES).map((x) => `<span class="ebar ${x.cont ? 'cont' : ''} ${x.more ? 'more' : ''}" style="grid-column:${x.c0 + 1}/${x.c1 + 2};grid-row:${x.lane + 1};--c:${esc(x.color)}">${esc(x.title)}</span>`).join('')}
+      ${hidden.map((n, c) => (n ? `<span class="emore" style="grid-column:${c + 1};grid-row:${MAX_LANES + 1}">+${n}</span>` : '')).join('')}</div>
+  </div>`;
+}
 VIEWS.calendar = (pick) => {
   const td = today();
   if (pick && /^\d{4}-\d\d-\d\d$/.test(pick)) { S.day = pick; S.calMonth = pick.slice(0, 7); }
   S.calMonth ||= td.slice(0, 7); S.day ||= td;
-  const [y, m] = S.calMonth.split('-').map(Number);
-  const first = `${S.calMonth}-01`, days = new Date(Date.UTC(y, m, 0)).getUTCDate();
-  let cells = '';
-  for (let i = 0; i < dow(first); i++) cells += '<span class="cell blank"></span>';
-  for (let d = 1; d <= days; d++) {
-    const ds = `${S.calMonth}-${pad(d)}`;
-    const dots = itemsOn(ds).slice(0, 4).map((x) => `<i style="--c:${x.color}"></i>`).join('');
-    cells += `<button class="cell ${ds === td ? 'today' : ''} ${ds === S.day ? 'sel' : ''} ${dow(ds) >= 5 ? 'wk' : ''}" data-act="pick-day" data-day="${ds}"><span class="dn">${d}</span><span class="dots">${dots}</span></button>`;
-  }
+  const first = `${S.calMonth}-01`;
+  const last = addDays(addMonths(first, 1), -1);
+  let ws = addDays(first, -dow(first)); let weeks = '';
+  while (ws <= last) { weeks += weekRow(ws, td); ws = addDays(ws, 7); }
   const list = itemsOn(S.day);
   return `${header(esc(fmt(first, { month: 'long', year: 'numeric' })), { add: 'add-event' })}
     <div class="monthnav"><button class="pill" data-act="cal-prev">‹ Prev</button><button class="pill" data-act="cal-today">Today</button><button class="pill" data-act="cal-next">Next ›</button></div>
-    <section class="card cal"><div class="dows">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => `<span>${d}</span>`).join('')}</div><div class="grid">${cells}</div></section>
-    <div class="ch"><h2>${esc(fmt(S.day, { weekday: 'long', day: 'numeric', month: 'long' }))}</h2><button class="link" data-act="add-event" data-date="${S.day}">＋ Add</button></div>
+    <section class="card cal"><div class="dows">${['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map((d) => `<span>${d}</span>`).join('')}</div>${weeks}</section>
+    <div class="ch" id="dayhead"><h2>${esc(fmt(S.day, { weekday: 'long', day: 'numeric', month: 'long' }))}</h2><button class="link" data-act="add-event" data-date="${S.day}">＋ Add</button></div>
     ${list.length ? `<div class="list">${list.map((x) => `<${x.edit ? `button data-act="${x.edit}" data-id="${x.id}"` : `a href="${x.href}"`} class="card ev" style="--c:${x.color}">
         <span class="evb"><b>${x.icon} ${esc(x.title)}</b><small>${esc(x.sub)}</small></span>${x.who ? whoChip(x.who) : ''}</${x.edit ? 'button' : 'a'}>`).join('')}</div>` : empty('🌤️', 'Nothing planned.')}`;
 };
@@ -204,24 +229,25 @@ function itemsOn(ds) {
     if (e.date <= ds && ds <= last) {
       const multi = last !== e.date;
       const sub = [multi ? `Day ${diffDays(e.date, ds) + 1} of ${diffDays(e.date, last) + 1}` : '', e.start_time && ds === e.date ? hm(e.start_time) + (e.end_time && !multi ? '–' + hm(e.end_time) : '') : '', e.location].filter(Boolean).join(' · ');
-      out.push({ id: e.id, edit: 'edit-event', title: e.title, sub: sub || 'All day', icon: '📅', who: e.who, color: e.who && e.who !== 'both' ? profile(e.who)?.color || 'var(--accent)' : 'var(--green)', t: hm(e.start_time) || '00:00' });
+      out.push({ id: e.id, edit: 'edit-event', title: e.title, sub: sub || 'All day', icon: '📅', who: e.who, color: evColor(e), t: hm(e.start_time) || '00:00' });
     }
   });
-  S.db.people.forEach((p) => { if (nextOccurrence(p, ds) === ds) out.push({ href: `#/person/${p.id}`, title: personTitle(p, ds), sub: p.kind === 'birthday' ? 'Birthday' : p.kind === 'anniversary' ? 'Anniversary' : 'Important date', icon: p.kind === 'birthday' ? '🎂' : p.kind === 'anniversary' ? '💍' : '⭐', color: '#f06595', t: '00:00' }); });
-  S.db.trips.forEach((t) => { if (t.start_date && t.start_date <= ds && ds <= (t.end_date || t.start_date)) out.push({ href: `#/trip/${t.id}`, title: t.name, sub: t.destination || 'Trip', icon: '✈️', color: '#1c9bd6', t: '00:01' }); });
+  S.db.people.forEach((p) => { if (nextOccurrence(p, ds) === ds) out.push({ href: `#/person/${p.id}`, title: personTitle(p, ds), sub: p.kind === 'birthday' ? 'Birthday' : p.kind === 'anniversary' ? 'Anniversary' : 'Important date', icon: p.kind === 'birthday' ? '🎂' : p.kind === 'anniversary' ? '💍' : '⭐', color: '#ef5da8', t: '00:00' }); });
+  S.db.trips.forEach((t) => { if (t.start_date && t.start_date <= ds && ds <= (t.end_date || t.start_date)) out.push({ href: `#/trip/${t.id}`, title: t.name, sub: t.destination || 'Trip', icon: '✈️', color: '#3b9eea', t: '00:01' }); });
   return out.sort((a, b) => a.t.localeCompare(b.t));
 }
 const eventForm = (row = {}) => openForm({
-  title: row.id ? 'Edit event' : 'New event', table: 'events', row,
+  title: row.id ? 'Edit event' : 'New event', table: 'events', row: row.id && !row.color ? { ...row, color: evColor(row) } : row,
   fields: [
     { k: 'title', label: 'What?', req: true, ph: 'e.g. Dinner with the Smiths' },
     { k: 'date', label: 'Date', type: 'date', req: true, half: true }, { k: 'end_date', label: 'End date (optional)', type: 'date', half: true },
     { k: 'start_time', label: 'Start', type: 'time', half: true }, { k: 'end_time', label: 'End', type: 'time', half: true },
     { k: 'location', label: 'Where?', ph: '📍' },
+    { k: 'color', label: 'Colour', type: 'color', options: EVENT_COLORS },
     { k: 'who', label: 'Who', type: 'seg', options: [['both', 'Both of us'], ...people2().map((p) => [p.user_id, p.name])] },
     { k: 'notes', label: 'Notes', type: 'textarea' },
   ],
-  defaults: { date: S.day || today(), who: 'both' },
+  defaults: { date: S.day || today(), who: 'both', color: EVENT_COLORS[0][0] },
   validate: (v) => (v.end_date && v.end_date < v.date ? 'End date is before the start date.' : null),
 });
 
@@ -573,7 +599,7 @@ function notifSection() {
   const pr = getPrefs();
   const sw = (k, label, on, sub) => `<label class="switch"><span>${label}${sub ? `<small>${sub}</small>` : ''}</span><input type="checkbox" data-push="${k}" ${on ? 'checked' : ''}><i></i></label>`;
   return `${sw('on', S.pushOn ? 'On for this phone' : 'Turn on notifications', S.pushOn)}
-    ${S.pushOn ? `<div class="subsw">${sw('events', '⏰ Event reminders', pr.events, '1 hour before')}${sw('digest', '☀️ Morning summary', pr.digest, '07:00 – chores, birthdays, trips')}${sw('budget', '💸 Budget alerts', pr.budget, 'when a category goes over')}</div>
+    ${S.pushOn ? `<div class="subsw">${sw('events', '⏰ Event reminders', pr.events, '1 hour before')}${sw('digest', '☀️ Morning summary', pr.digest, '07:00 – chores, birthdays, trips')}${sw('budget', '💸 Budget alerts', pr.budget, 'when a category goes over')}${sw('added', '🆕 New things added', pr.added, `when ${esc(partner()?.name || 'your partner')} adds an event, chore, list item and more`)}</div>
     <button class="btn ghost wide" data-act="push-test">Send a test notification</button>` : ''}`;
 }
 
@@ -611,6 +637,7 @@ function drawForm() {
       case 'money': case 'decimal': return `<label class="${cls}">${lab}<input inputmode="decimal" ${common} value="${esc(val == null ? '' : typeof val === 'string' ? val : String(Number(val)))}" placeholder="${fd.type === 'money' ? 'R 0' : ''}"></label>`;
       case 'select': return `<label class="${cls}">${lab}<select ${common}>${fd.options.map(([o, n]) => `<option value="${esc(o)}" ${String(val) === String(o) ? 'selected' : ''}>${esc(n)}</option>`).join('')}</select></label>`;
       case 'seg': return `<div class="${cls}">${lab}<div class="segc wide">${fd.options.map(([o, n]) => `<button type="button" class="${String(val ?? '') === String(o) ? 'on' : ''}" data-act="seg" data-k="${fd.k}" data-v="${esc(o)}" ${fd.rerender ? 'data-rr' : ''}>${esc(n)}</button>`).join('')}</div></div>`;
+      case 'color': return `<div class="${cls}">${lab}<div class="evcolors">${fd.options.map(([c, n]) => `<button type="button" class="${String(val || fd.options[0][0]) === c ? 'on' : ''}" style="--c:${c}" data-act="seg" data-k="${fd.k}" data-v="${c}" aria-label="${n}"></button>`).join('')}</div></div>`;
       case 'emoji': return `<div class="${cls}">${lab}<div class="emojis">${fd.options.map((o) => `<button type="button" class="${val === o ? 'on' : ''}" data-act="seg" data-k="${fd.k}" data-v="${o}">${o}</button>`).join('')}</div></div>`;
       case 'cats': { const cats = v.type === 'income' ? INCOME_CATS : EXPENSE_CATS;
         return `<div class="${cls}">${lab}<div class="cats">${cats.map(([id, e, n]) => `<button type="button" class="${val === id ? 'on' : ''}" data-act="seg" data-k="${fd.k}" data-v="${id}"><span>${e}</span><small>${n}</small></button>`).join('')}</div></div>`; }
@@ -652,7 +679,7 @@ const A = {
   'close-sheet': closeSheet,
   seg: (el) => { readFormValues(); FORM.values[el.dataset.k] = el.dataset.v; if (el.dataset.k === 'type') FORM.values.category = el.dataset.v === 'income' ? 'salary' : 'groceries'; drawForm(); },
   'form-delete': () => guard(async () => { if (!confirm('Delete this?')) return; const t = FORM.table, id = FORM.row.id; closeSheet(); await remove(t, id); if (['trips', 'people', 'lists'].includes(t)) history.back(); }),
-  'pick-day': (el) => { S.day = el.dataset.day; render(); },
+  'pick-day': (el) => { const d = el.dataset.day; if (d.slice(0, 7) !== S.calMonth) S.calMonth = d.slice(0, 7); S.day = d; render(); document.getElementById('dayhead')?.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); },
   'cal-prev': () => { S.calMonth = addMonths(S.calMonth + '-01', -1).slice(0, 7); render(); },
   'cal-next': () => { S.calMonth = addMonths(S.calMonth + '-01', 1).slice(0, 7); render(); },
   'cal-today': () => { S.calMonth = today().slice(0, 7); S.day = today(); if (route().id) go('#/calendar'); else render(); },
@@ -785,7 +812,7 @@ async function start() {
   catch (e) { const c = localStorage.getItem('onstwee-cache'); if (c) { S.db = JSON.parse(c); toast('Offline – showing saved data'); } else throw e; }
   if (!me()) { const keepMe = S.me; S.me = null; welcomeScreen(); S.me = keepMe; return; }
   S.allowed = await api.allowed().catch(() => []);
-  if (pushStatus() === 'ok') S.pushOn = DEMO ? Notification.permission === 'granted' : !!(await currentSub().catch(() => null));
+  if (pushStatus() === 'ok') S.pushOn = DEMO ? Notification.permission === 'granted' : await syncPush(S.me).catch(async () => !!(await currentSub().catch(() => null)));
   render();
   if (!S.subscribed) { S.subscribed = true; api.subscribe((t) => api.load(t).then((rows) => { S.db[t] = rows; cache(); safeRender(); }).catch(() => {})); }
 }
