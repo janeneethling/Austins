@@ -104,14 +104,13 @@ VIEWS.home = () => {
   const td = today(); const h = nowParts().hour;
   const greet = h < 12 ? 'Goeie môre' : h < 18 ? 'Goeie middag' : 'Goeienaand';
   const soon = upcomingItems(14).slice(0, 5);
-  const due = S.db.tasks.filter((t) => !t.done && t.due && t.due <= addDays(td, 1)).sort((a, b) => a.due.localeCompare(b.due));
   const month = td.slice(0, 7);
   const spent = sum(S.db.transactions.filter((t) => t.type === 'expense' && t.date.startsWith(month)), (t) => t.amount);
   const budget = sum(S.db.budgets, (b) => b.amount);
   const grocery = S.db.lists.find((l) => l.name === 'Groceries');
   const gCount = grocery ? S.db.list_items.filter((i) => i.list_id === grocery.id && !i.done).length : 0;
   const tiles = [
-    ['#/tasks', '✅', 'Chores', `${S.db.tasks.filter((t) => !t.done).length} open`],
+    ['#/recipes', '🍳', 'Recipes', S.db.recipes.length ? `${S.db.recipes.length} saved` : 'Add one'],
     ['#/ideas', '💡', 'Date nights', `${S.db.ideas.filter((i) => !i.done && i.kind === 'date').length} ideas`],
     ['#/dates', '🎁', 'Dates & gifts', nextPersonLabel()],
     ['#/trips', '✈️', 'Trips', nextTripLabel()],
@@ -130,10 +129,6 @@ VIEWS.home = () => {
     ${soon.length ? `<ul class="rows">${soon.map((x) => `<li><a class="rowa" href="${x.href}"><span class="when"><b>${x.date === td ? 'Today' : x.date === addDays(td, 1) ? 'Tmrw' : esc(fmt(x.date, { day: 'numeric', month: 'short' }))}</b><small>${esc(x.time || fmt(x.date, { weekday: 'short' }))}</small></span><span class="what">${x.icon} ${esc(x.title)}</span>${x.who ? whoChip(x.who) : ''}</a></li>`).join('')}</ul>` : '<p class="muted">Nothing in the next two weeks.</p>'}
   </section>
 
-  <section class="card">
-    <div class="ch"><h3>✅ Chores due</h3><a class="link" href="#/tasks">All ›</a></div>
-    ${due.length ? `<ul class="rows">${due.map(taskRow).join('')}</ul>` : '<p class="muted">All done – nice! 🎉</p>'}
-  </section>
 
   <section class="two-cards">
     <a class="card mini" href="#/money"><small>Spent in ${esc(fmt(month + '-01', { month: 'long' }))}</small><b>${money(spent)}</b>
